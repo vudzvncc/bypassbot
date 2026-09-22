@@ -1,4 +1,6 @@
 import os
+import re
+import time
 import asyncio
 import requests
 import discord
@@ -11,7 +13,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot Discord đang hoạt động 24/7 trên Render!"
+    return "Bot Discord Bypass Link đang hoạt động 24/7 trên Render!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -25,7 +27,8 @@ def keep_alive():
 # --- 2. KHỞI TẠO DISCORD BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='/', intents=intents)
+# Tắt help command mặc định để tạo help command tùy chỉnh không bị xung đột
+bot = commands.Bot(command_prefix=['/', '!'], intents=intents, help_command=None)
 
 # --- 3. HÀM TẠO THANH PHẦN TRĂM (PROGRESS BAR) ---
 def make_progress_bar(percent):
@@ -75,7 +78,7 @@ def bypass_link_service(url):
 # --- 5. QUY TRÌNH XỬ LÝ LỆNH BYPASS ---
 async def process_bypass(ctx, raw_arg, service_name):
     # Trích xuất URL từ cú pháp link:URL
-    link = raw_arg.replace("link:", "").strip()
+    link = raw_arg.replace("link:", "").strip() if raw_arg else ""
 
     if not link or not link.startswith("http"):
         embed_err = discord.Embed(
@@ -95,17 +98,17 @@ async def process_bypass(ctx, raw_arg, service_name):
     status_msg = await ctx.send(embed=embed_start)
 
     await asyncio.sleep(1)
-    await update_progress(status_msg, "Đang kết nối tới máy chủ...", 25)
+    await update_progress(status_msg, "🔍 Đang kiểm tra link...", 25)
 
     await asyncio.sleep(1)
-    await update_progress(status_msg, "Đang giải mã và bypass link...", 65)
+    await update_progress(status_msg, "🔓 Đang giải mã và bypass link...", 65)
 
     # Thực hiện request API ở background thread
     loop = asyncio.get_event_loop()
     result_link = await loop.run_in_executor(None, bypass_link_service, link)
 
     await asyncio.sleep(1)
-    await update_progress(status_msg, "Hoàn tất xử lý!", 100)
+    await update_progress(status_msg, "✅ Hoàn tất xử lý!", 100)
     await asyncio.sleep(0.5)
 
     if result_link:
@@ -125,15 +128,11 @@ async def process_bypass(ctx, raw_arg, service_name):
         )
         await status_msg.edit(embed=embed_fail)
 
-# --- 6. EVENT VÀ LỆNH BOT ---
+# --- 6. EVENT VÀ LỆNH BOT (Tất cả đều là async def) ---
 @bot.event
 async def on_ready():
     print(f"🤖 Bot Discord {bot.user} đã sẵn sàng hoạt động!")
-    await bot.change_presence(activity=discord.Game(name="/help để xem lệnh"))
-
-@bot.command(name='help')
-def help_cmd(ctx):
-    pass # Ghi đè handler gốc của commands.Bot
+    await bot.change_presence(activity=discord.Game(name="/help để xem hướng dẫn"))
 
 @bot.command(name='help')
 async def custom_help(ctx):
@@ -172,6 +171,6 @@ async def workink_cmd(ctx, *, arg: str = None):
 
 # --- 7. CHẠY BOT ---
 if __name__ == '__main__':
-    keep_alive() # Khởi chạy Flask Server hỗ trợ Render
+    keep_alive() # Khởi chạy Flask Server để giữ bot online trên Render
     token = os.environ.get("DISCORD_TOKEN", "YOUR_DISCORD_BOT_TOKEN_HERE")
     bot.run(token)
