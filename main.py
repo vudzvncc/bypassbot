@@ -170,7 +170,22 @@ async def workink_cmd(ctx, *, arg: str = None):
     await process_bypass(ctx, arg, "Work.ink")
 
 # --- 7. CHẠY BOT ---
+import time
+
 if __name__ == '__main__':
-    keep_alive() # Khởi chạy Flask Server để giữ bot online trên Render
-    token = os.environ.get("DISCORD_TOKEN", "YOUR_DISCORD_BOT_TOKEN_HERE")
-    bot.run(token)
+    keep_alive()
+    
+    # Bọc trong vòng lặp để xử lý lỗi 429 khi bị Discord chặn IP tạm thời
+    while True:
+        try:
+            bot.run(TOKEN)
+            break
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                print("⚠️ Bị dính Discord Rate Limit (429)! Đang chờ 30 giây rồi thử lại...")
+                time.sleep(30)
+            else:
+                raise e
+        except Exception as e:
+            print(f"⚠️ Lỗi khởi chạy: {e}")
+            time.sleep(10)
