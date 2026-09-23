@@ -6,6 +6,7 @@ from flask import Flask
 import discord
 from discord.ext import commands
 from discord import app_commands
+import aiohttp  # Thư viện gửi request async cực nhanh
 
 # ==========================================
 # 1. WEB SERVER GIỮ BOT ONLINE (FLASK)
@@ -37,8 +38,7 @@ class BypassBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Đồng bộ các lệnh Slash Command với Discord
-        print("🔄 Đang đồng bộ Slash Commands với Discord...")
+        print("🔄 Đang đồng bộ Slash Commands...")
         synced = await self.tree.sync()
         print(f"✅ Đã đồng bộ thành công {len(synced)} lệnh Slash!")
 
@@ -55,40 +55,47 @@ def create_progress_bar(percent: int, length: int = 10) -> str:
 
 
 # ==========================================
-# 4. EVENT KHỞI ĐỘNG BOT
+# 4. HÀM GIẢI MÃ LINK BẰNG API BYPASS
 # ==========================================
-@bot.event
-async def on_ready():
-    print(f"✅ Bot đã đăng nhập thành công: {bot.user.name} (ID: {bot.user.id})")
-    await bot.change_presence(activity=discord.Game(name="/help | Bypass Link ⚡"))
+async def fetch_bypassed_url(target_url: str) -> str:
+    """
+    Gửi request tới API bypass chuyên dụng để lấy link đích cuối cùng.
+    """
+    # Sử dụng API Bypass miễn phí hỗ trợ Cuty, ShrinkMe, Work.ink
+    api_endpoint = f"https://api.bypass.vip/bypass?url={target_url}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_endpoint, headers=headers, timeout=15) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # Lấy kết quả link đích từ phản hồi JSON
+                    if data.get("status") == "success" or "destination" in data:
+                        return data.get("destination") or data.get("result")
+                    elif "result" in data:
+                        return data["result"]
+    except Exception as e:
+        print(f"❌ Lỗi khi gọi API Bypass: {e}")
+
+    # Phương án dự phòng: Nếu API lỗi, tự theo dõi Redirect của URL
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(target_url, headers=headers, allow_redirects=True, timeout=10) as resp:
+                final_url = str(resp.url)
+                if final_url != target_url:
+                    return final_url
+    except Exception:
+        pass
+
+    return None
 
 
 # ==========================================
-# 5. SLASH COMMAND: /help
-# ==========================================
-@bot.tree.command(name="help", description="Xem danh sách các lệnh hỗ trợ bypass link")
-async def help_command(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="🤖 Danh Sách Lệnh Bypass Link",
-        description="Dưới đây là các lệnh hỗ trợ bypass link rút gọn:",
-        color=discord.Color.blue()
-    )
-    embed.add_field(
-        name="🔗 Danh sách lệnh Slash:",
-        value=(
-            "• `/cuty link:...` - Bypass link Cuty.io / Cuttty.com\n"
-            "• `/shrinkme link:...` - Bypass link ShrinkMe.io\n"
-            "• `/workink link:...` - Bypass link Work.ink\n"
-            "• `/help` - Xem hướng dẫn này"
-        ),
-        inline=False
-    )
-    embed.set_footer(text="⚡ Bypass Bot • Nhanh chóng & Chính xác")
-    await interaction.response.send_message(embed=embed)
-
-
-# ==========================================
-# 6. HÀM XỬ LÝ BYPASS DÙNG CHUNG
+# 5. HÀM XỬ LÝ VÀ HIỂN THỊ KẾT QUẢ
 # ==========================================
 async def process_bypass(interaction: discord.Interaction, url: str, service_name: str, icon: str):
     url = url.strip()
@@ -96,80 +103,86 @@ async def process_bypass(interaction: discord.Interaction, url: str, service_nam
         url = url[5:].strip()
 
     if not url.startswith("http://") and not url.startswith("https://"):
-        await interaction.response.send_message(
-            f"❌ Vui lòng nhập link hợp lệ! (Ví dụ: `https://...`)",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ Link không hợp lệ! Phải bắt đầu bằng `http://` hoặc `https://`", ephemeral=True)
         return
 
-    # Gửi phản hồi ban đầu với Embed tiến trình 0%
+    # 1. Tạo Embed ban đầu (0%)
     embed = discord.Embed(
         title=f"{icon} Đang Bypass Link {service_name}",
-        description=f"🔗 **Link nhập:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(0)}",
+        description=f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(0)}",
         color=discord.Color.gold()
     )
-    embed.set_footer(text="⏳ Đang kết nối máy chủ giải mã...")
+    embed.set_footer(text="⏳ Đang gửi request giải mã...")
     await interaction.response.send_message(embed=embed)
 
-    # Chạy cập nhật thanh tiến trình phần trăm %
-    progress_steps = [25, 50, 75, 100]
-    for p in progress_steps:
-        await asyncio.sleep(1)
-        embed.description = f"🔗 **Link nhập:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(p)}"
-        
-        if p == 100:
-            embed.title = f"✅ Bypass Thành Công {service_name}!"
-            embed.color = discord.Color.green()
-            
-            # --- DÁN LOGIC BYPASS THỰC TẾ CỦA BẠN VÀO ĐÂY ---
-            bypassed_link = url  
-            
-            embed.add_field(name="🎉 Kết Quả Link Gốc:", value=f"```{bypassed_link}```", inline=False)
-            embed.set_footer(text="✨ Hoàn tất xử lý!")
-            
-        await interaction.edit_original_response(embed=embed)
+    # 2. Chạy tiến trình 30% -> 70%
+    await asyncio.sleep(1)
+    embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(35)}"
+    await interaction.edit_original_response(embed=embed)
+
+    # 3. Gọi hàm bypass thực tế
+    bypassed_result = await fetch_bypassed_url(url)
+
+    await asyncio.sleep(1)
+    embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(80)}"
+    await interaction.edit_original_response(embed=embed)
+
+    # 4. Trả kết quả 100%
+    if bypassed_result and bypassed_result != url:
+        embed.title = f"✅ Bypass Thành Công {service_name}!"
+        embed.color = discord.Color.green()
+        embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(100)}"
+        embed.add_field(name="🎉 Link Đích (Destination URL):", value=f"```{bypassed_result}```", inline=False)
+        embed.set_footer(text="✨ Đã giải mã thành công!")
+    else:
+        embed.title = f"❌ Bypass Thất Bại {service_name}!"
+        embed.color = discord.Color.red()
+        embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(100)}"
+        embed.add_field(name="⚠️ Thông báo:", value="Không thể giải mã link này hoặc link không hỗ trợ/đã hết hạn.", inline=False)
+        embed.set_footer(text="Vui lòng kiểm tra lại liên kết.")
+
+    await interaction.edit_original_response(embed=embed)
 
 
 # ==========================================
-# 7. KHAI BÁO CÁC SLASH COMMAND BYPASS
+# 6. KHAI BÁO LỆNH /help VÀ CÁC LỆNH BYPASS
 # ==========================================
-@bot.tree.command(name="cuty", description="Bypass liên kết Cuty.io / Cuttty.com")
-@app_commands.describe(link="Dán link Cuty.io cần bypass vào đây")
+@bot.event
+async def on_ready():
+    print(f"✅ Bot đã đăng nhập: {bot.user.name}")
+    await bot.change_presence(activity=discord.Game(name="/help | Bypass Link ⚡"))
+
+@bot.tree.command(name="help", description="Hướng dẫn sử dụng bot bypass")
+async def help_cmd(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🤖 Lệnh Bypass Link Rút Gọn",
+        description="Gõ `/` và chọn các lệnh sau:",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Lệnh", value="• `/cuty` - Bypass Cuty.io\n• `/shrinkme` - Bypass ShrinkMe.io\n• `/workink` - Bypass Work.ink", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="cuty", description="Bypass link Cuty.io")
+@app_commands.describe(link="Dán link Cuty.io")
 async def cuty_cmd(interaction: discord.Interaction, link: str):
     await process_bypass(interaction, link, "Cuty.io", "✂️")
 
-@bot.tree.command(name="shrinkme", description="Bypass liên kết ShrinkMe.io")
-@app_commands.describe(link="Dán link ShrinkMe.io cần bypass vào đây")
+@bot.tree.command(name="shrinkme", description="Bypass link ShrinkMe.io")
+@app_commands.describe(link="Dán link ShrinkMe.io")
 async def shrinkme_cmd(interaction: discord.Interaction, link: str):
     await process_bypass(interaction, link, "ShrinkMe.io", "📉")
 
-@bot.tree.command(name="workink", description="Bypass liên kết Work.ink")
-@app_commands.describe(link="Dán link Work.ink cần bypass vào đây")
+@bot.tree.command(name="workink", description="Bypass link Work.ink")
+@app_commands.describe(link="Dán link Work.ink")
 async def workink_cmd(interaction: discord.Interaction, link: str):
     await process_bypass(interaction, link, "Work.ink", "💼")
 
 
 # ==========================================
-# 8. THIẾT LẬP KẾT NỐI & CHẠY BOT
+# 7. KHỞI CHẠY
 # ==========================================
 if __name__ == '__main__':
     keep_alive()
-    
     TOKEN = os.environ.get('DISCORD_TOKEN')
-    if not TOKEN:
-        print("❌ LỖI KHỞI ĐỘNG: Chưa cài đặt biến môi trường DISCORD_TOKEN!")
-    else:
-        while True:
-            try:
-                bot.run(TOKEN)
-                break
-            except discord.errors.HTTPException as e:
-                if e.status == 429:
-                    print("⚠️ Dính Rate Limit (Lỗi 429). Đang chờ 30 giây...")
-                    time.sleep(30)
-                else:
-                    print(f"⚠️ Lỗi HTTP từ Discord: {e}")
-                    time.sleep(10)
-            except Exception as e:
-                print(f"⚠️ Lỗi kết nối Bot: {e}")
-                time.sleep(10)
+    if TOKEN:
+        bot.run(TOKEN)
