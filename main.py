@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import asyncio
 from threading import Thread
@@ -8,7 +7,6 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import aiohttp
-from bs4 import BeautifulSoup
 
 # ==========================================
 # 1. WEB SERVER GIỮ BOT ONLINE (FLASK)
@@ -57,46 +55,42 @@ def create_progress_bar(percent: int, length: int = 10) -> str:
 
 
 # ==========================================
-# 4. HÀM TỰ BYPASS CHUỖI REDIRECT (ĐỘC LẬP)
+# 4. HÀM BYPASS TỔNG HỢP (MULTI-API)
 # ==========================================
 async def fetch_bypassed_url(target_url: str) -> str:
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            # 1. Theo dõi HTTP Redirect chuẩn
-            async with session.get(target_url, allow_redirects=True, timeout=12) as response:
-                final_url = str(response.url)
-                
-                # Nếu URL đã thoát khỏi trang rút gọn
-                if not any(domain in final_url.lower() for domain in ["cuty.io", "shrinkme.io", "work.ink"]):
-                    return final_url
-                
-                # 2. Giải mã Meta Refresh hoặc JS Redirect trong HTML
-                html_content = await response.text()
-                soup = BeautifulSoup(html_content, 'html.parser')
-                
-                # Bắt thẻ Meta Refresh
-                meta_refresh = soup.find('meta', attrs={'http-equiv': re.compile(r'refresh', re.I)})
-                if meta_refresh and 'content' in meta_refresh.attrs:
-                    content = meta_refresh['content']
-                    if 'url=' in content.lower():
-                        extracted_url = content.split('url=')[-1].strip('\'"')
-                        return extracted_url
 
-                # Bắt JavaScript Redirect
-                js_urls = re.findall(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', html_content)
-                if js_urls:
-                    return js_urls[0]
-                    
-                return final_url
-    except Exception as e:
-        print(f"❌ Lỗi khi tự giải mã link: {e}")
-        return None
+    # Danh sách các API bypass chuyên dụng
+    api_sources = [
+        f"https://api.bypasser.su/api/bypass?url={target_url}",
+        f"https://free-bypass-api.vercel.app/api/bypass?url={target_url}",
+        f"https://ethon.site/api/bypass?url={target_url}"
+    ]
+
+    async with aiohttp.ClientSession(headers=headers) as session:
+        # Thử từng API trong danh sách
+        for api_url in api_sources:
+            try:
+                async with session.get(api_url, timeout=12) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        # Tìm field kết quả trong các dạng JSON khác nhau
+                        result = (
+                            data.get("destination") or 
+                            data.get("result") or 
+                            data.get("bypassed_url") or 
+                            data.get("url")
+                        )
+                        # Nếu kết quả hợp lệ và khác link gốc ban đầu
+                        if result and str(result).startswith("http") and result != target_url and "bypass.vip" not in str(result):
+                            return str(result)
+            except Exception as e:
+                print(f"⚠️ API {api_url} không phản hồi: {e}")
+                continue
+
+    return None
 
 
 # ==========================================
@@ -117,23 +111,23 @@ async def process_bypass(interaction: discord.Interaction, url: str, service_nam
         description=f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(0)}",
         color=discord.Color.gold()
     )
-    embed.set_footer(text="⏳ Đang tự động quét và phân tích liên kết...")
+    embed.set_footer(text="⏳ Đang kết nối server giải mã...")
     await interaction.response.send_message(embed=embed)
 
-    # 2. Chạy tiến trình 35%
+    # 2. Cập nhật tiến trình (35%)
     await asyncio.sleep(1)
     embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(35)}"
     await interaction.edit_original_response(embed=embed)
 
-    # 3. Thực hiện bypass độc lập
+    # 3. Gọi hàm bypass
     bypassed_result = await fetch_bypassed_url(url)
 
     await asyncio.sleep(1)
     embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(80)}"
     await interaction.edit_original_response(embed=embed)
 
-    # 4. Kiểm tra và trả về kết quả
-    if bypassed_result and bypassed_result != url:
+    # 4. Trả kết quả cuối cùng (100%)
+    if bypassed_result:
         embed.title = f"✅ Bypass Thành Công {service_name}!"
         embed.color = discord.Color.green()
         embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(100)}"
@@ -143,8 +137,8 @@ async def process_bypass(interaction: discord.Interaction, url: str, service_nam
         embed.title = f"❌ Bypass Thất Bại {service_name}!"
         embed.color = discord.Color.red()
         embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(100)}"
-        embed.add_field(name="⚠️ Thông báo:", value="Không thể giải mã tự động link này hoặc liên kết yêu cầu xác minh thủ công.", inline=False)
-        embed.set_footer(text="Vui lòng thử lại với liên kết khác.")
+        embed.add_field(name="⚠️ Thông báo:", value="Không thể giải mã tự động link này. Server bypass đang quá tải hoặc link yêu cầu Captcha thủ công.", inline=False)
+        embed.set_footer(text="Vui lòng thử lại sau.")
 
     await interaction.edit_original_response(embed=embed)
 
@@ -184,7 +178,7 @@ async def workink_cmd(interaction: discord.Interaction, link: str):
 
 
 # ==========================================
-# 7. KHỞI CHẠY
+# 7. KHỞI CHẠY BOT
 # ==========================================
 if __name__ == '__main__':
     keep_alive()
