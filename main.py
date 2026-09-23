@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import asyncio
 from threading import Thread
@@ -6,7 +7,8 @@ from flask import Flask
 import discord
 from discord.ext import commands
 from discord import app_commands
-import aiohttp  # Thư viện gửi request async cực nhanh
+import aiohttp
+from bs4 import BeautifulSoup
 
 # ==========================================
 # 1. WEB SERVER GIỮ BOT ONLINE (FLASK)
@@ -55,43 +57,46 @@ def create_progress_bar(percent: int, length: int = 10) -> str:
 
 
 # ==========================================
-# 4. HÀM GIẢI MÃ LINK BẰNG API BYPASS
+# 4. HÀM TỰ BYPASS CHUỖI REDIRECT (ĐỘC LẬP)
 # ==========================================
 async def fetch_bypassed_url(target_url: str) -> str:
-    """
-    Gửi request tới API bypass chuyên dụng để lấy link đích cuối cùng.
-    """
-    # Sử dụng API Bypass miễn phí hỗ trợ Cuty, ShrinkMe, Work.ink
-    api_endpoint = f"https://api.bypass.vip/bypass?url={target_url}"
-    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
     }
     
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api_endpoint, headers=headers, timeout=15) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    # Lấy kết quả link đích từ phản hồi JSON
-                    if data.get("status") == "success" or "destination" in data:
-                        return data.get("destination") or data.get("result")
-                    elif "result" in data:
-                        return data["result"]
-    except Exception as e:
-        print(f"❌ Lỗi khi gọi API Bypass: {e}")
-
-    # Phương án dự phòng: Nếu API lỗi, tự theo dõi Redirect của URL
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(target_url, headers=headers, allow_redirects=True, timeout=10) as resp:
-                final_url = str(resp.url)
-                if final_url != target_url:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # 1. Theo dõi HTTP Redirect chuẩn
+            async with session.get(target_url, allow_redirects=True, timeout=12) as response:
+                final_url = str(response.url)
+                
+                # Nếu URL đã thoát khỏi trang rút gọn
+                if not any(domain in final_url.lower() for domain in ["cuty.io", "shrinkme.io", "work.ink"]):
                     return final_url
-    except Exception:
-        pass
+                
+                # 2. Giải mã Meta Refresh hoặc JS Redirect trong HTML
+                html_content = await response.text()
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # Bắt thẻ Meta Refresh
+                meta_refresh = soup.find('meta', attrs={'http-equiv': re.compile(r'refresh', re.I)})
+                if meta_refresh and 'content' in meta_refresh.attrs:
+                    content = meta_refresh['content']
+                    if 'url=' in content.lower():
+                        extracted_url = content.split('url=')[-1].strip('\'"')
+                        return extracted_url
 
-    return None
+                # Bắt JavaScript Redirect
+                js_urls = re.findall(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', html_content)
+                if js_urls:
+                    return js_urls[0]
+                    
+                return final_url
+    except Exception as e:
+        print(f"❌ Lỗi khi tự giải mã link: {e}")
+        return None
 
 
 # ==========================================
@@ -112,22 +117,22 @@ async def process_bypass(interaction: discord.Interaction, url: str, service_nam
         description=f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(0)}",
         color=discord.Color.gold()
     )
-    embed.set_footer(text="⏳ Đang gửi request giải mã...")
+    embed.set_footer(text="⏳ Đang tự động quét và phân tích liên kết...")
     await interaction.response.send_message(embed=embed)
 
-    # 2. Chạy tiến trình 30% -> 70%
+    # 2. Chạy tiến trình 35%
     await asyncio.sleep(1)
     embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(35)}"
     await interaction.edit_original_response(embed=embed)
 
-    # 3. Gọi hàm bypass thực tế
+    # 3. Thực hiện bypass độc lập
     bypassed_result = await fetch_bypassed_url(url)
 
     await asyncio.sleep(1)
     embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(80)}"
     await interaction.edit_original_response(embed=embed)
 
-    # 4. Trả kết quả 100%
+    # 4. Kiểm tra và trả về kết quả
     if bypassed_result and bypassed_result != url:
         embed.title = f"✅ Bypass Thành Công {service_name}!"
         embed.color = discord.Color.green()
@@ -138,14 +143,14 @@ async def process_bypass(interaction: discord.Interaction, url: str, service_nam
         embed.title = f"❌ Bypass Thất Bại {service_name}!"
         embed.color = discord.Color.red()
         embed.description = f"🔗 **Link gốc:** `{url}`\n\n**Tiến trình:**\n{create_progress_bar(100)}"
-        embed.add_field(name="⚠️ Thông báo:", value="Không thể giải mã link này hoặc link không hỗ trợ/đã hết hạn.", inline=False)
-        embed.set_footer(text="Vui lòng kiểm tra lại liên kết.")
+        embed.add_field(name="⚠️ Thông báo:", value="Không thể giải mã tự động link này hoặc liên kết yêu cầu xác minh thủ công.", inline=False)
+        embed.set_footer(text="Vui lòng thử lại với liên kết khác.")
 
     await interaction.edit_original_response(embed=embed)
 
 
 # ==========================================
-# 6. KHAI BÁO LỆNH /help VÀ CÁC LỆNH BYPASS
+# 6. KHAI BÁO CÁC LỆNH SLASH
 # ==========================================
 @bot.event
 async def on_ready():
